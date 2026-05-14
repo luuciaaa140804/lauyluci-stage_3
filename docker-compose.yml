@@ -1,0 +1,248 @@
+version: '3.8'
+
+# =============================================================================
+# Stage 3 - Cluster Architecture
+# Simula un clúster distribuido en un solo PC usando contenedores Docker.
+#
+# Para arrancar todo:   docker compose up -d --build
+# Para ver logs:        docker compose logs -f
+# Para parar todo:      docker compose down
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # MESSAGE BROKER - Apache ActiveMQ
+  # Puerto 61616: JMS/TCP (comunicación entre servicios)
+  # Puerto 8161:  Consola web (http://localhost:8161, admin/admin)
+  # ---------------------------------------------------------------------------
+  activemq:
+    image: rmohr/activemq:5.15.9
+    container_name: activemq
+    restart: always
+    ports:
+      - "61616:61616"
+      - "8161:8161"
+    environment:
+      - ACTIVEMQ_ADMIN_LOGIN=admin
+      - ACTIVEMQ_ADMIN_PASSWORD=admin
+    networks:
+      - search_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8161 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # CRAWLER SERVICES - Descargan libros y publican eventos al broker
+  # Cada instancia procesa un subconjunto de IDs de libros
+  # ---------------------------------------------------------------------------
+  crawler1:
+    build:
+      context: ./crawler-service
+      dockerfile: Dockerfile
+    container_name: crawler1
+    restart: on-failure
+    environment:
+      - NODE_ID=crawler1
+      - BROKER_URL=tcp://activemq:61616
+      - DATALAKE_PATH=/datalake
+      - BOOK_IDS=1342,11,1513        # Pride and Prejudice, Alice, Romeo
+    volumes:
+      - datalake_data:/datalake
+    depends_on:
+      activemq:
+        condition: service_healthy
+    networks:
+      - search_net
+
+  crawler2:
+    build:
+      context: ./crawler-service
+      dockerfile: Dockerfile
+    container_name: crawler2
+    restart: on-failure
+    environment:
+      - NODE_ID=crawler2
+      - BROKER_URL=tcp://activemq:61616
+      - DATALAKE_PATH=/datalake
+      - BOOK_IDS=2701,84             # Moby Dick, Frankenstein
+    volumes:
+      - datalake_data:/datalake
+    depends_on:
+      activemq:
+        condition: service_healthy
+    networks:
+      - search_net
+
+  # ---------------------------------------------------------------------------
+  # INDEXING SERVICES - Consumen eventos del broker y actualizan Hazelcast
+  # ---------------------------------------------------------------------------
+  indexer1:
+    build:
+      context: ./indexing-service
+      dockerfile: Dockerfile
+    container_name: indexer1
+    restart: on-failure
+    environment:
+      - NODE_ID=indexer1
+      - BROKER_URL=tcp://activemq:61616
+      - DATALAKE_PATH=/datalake
+      - DB_PATH=/datamarts/metadata.db
+      - HZ_CLUSTER_NAME=search-cluster
+    volumes:
+      - datalake_data:/datalake
+      - datamarts_data:/datamarts
+    depends_on:
+      activemq:
+        condition: service_healthy
+    networks:
+      - search_net
+
+  indexer2:
+    build:
+      context: ./indexing-service
+      dockerfile: Dockerfile
+    container_name: indexer2
+    restart: on-failure
+    environment:
+      - NODE_ID=indexer2
+      - BROKER_URL=tcp://activemq:61616
+      - DATALAKE_PATH=/datalake
+      - DB_PATH=/datamarts/metadata.db
+      - HZ_CLUSTER_NAME=search-cluster
+    volumes:
+      - datalake_data:/datalake
+      - datamarts_data:/datamarts
+    depends_on:
+      activemq:
+        condition: service_healthy
+    networks:
+      - search_net
+
+  # ---------------------------------------------------------------------------
+  # SEARCH SERVICES - Consultan Hazelcast y responden queries
+  # Exponen puerto 8080 internamente; Nginx balancea entre ellos
+  # ---------------------------------------------------------------------------
+  search1:
+    build:
+      context: ./search-service
+      dockerfile: Dockerfile
+    container_name: search1
+    restart: always
+    environment:
+      - NODE_ID=search1
+      - HZ_CLUSTER_NAME=search-cluster
+      - DB_PATH=/datamarts/metadata.db
+    expose:
+      - "8080"
+    volumes:
+      - datamarts_data:/datamarts
+    networks:
+      - search_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  search2:
+    build:
+      context: ./search-service
+      dockerfile: Dockerfile
+    container_name: search2
+    restart: always
+    environment:
+      - NODE_ID=search2
+      - HZ_CLUSTER_NAME=search-cluster
+      - DB_PATH=/datamarts/metadata.db
+    expose:
+      - "8080"
+    volumes:
+      - datamarts_data:/datamarts
+    networks:
+      - search_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  search3:
+    build:
+      context: ./search-service
+      dockerfile: Dockerfile
+    container_name: search3
+    restart: always
+    environment:
+      - NODE_ID=search3
+      - HZ_CLUSTER_NAME=search-cluster
+      - DB_PATH=/datamarts/metadata.db
+    expose:
+      - "8080"
+    volumes:
+      - datamarts_data:/datamarts
+    networks:
+      - search_net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/status || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # LOAD BALANCER - Nginx distribuye tráfico entre los search services
+  # Accesible en http://localhost:80
+  # ---------------------------------------------------------------------------
+  nginx:
+    image: nginx:alpine
+    container_name: load_balancer
+    restart: always
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - search1
+      - search2
+      - search3
+    networks:
+      - search_net
+
+  # ---------------------------------------------------------------------------
+  # CONTROL MODULE - Orquesta el pipeline y expone API de administración
+  # Accesible en http://localhost:7000
+  # ---------------------------------------------------------------------------
+  control:
+    build:
+      context: ./control-module
+      dockerfile: Dockerfile
+    container_name: control
+    restart: always
+    ports:
+      - "7000:7000"
+    environment:
+      - BROKER_URL=tcp://activemq:61616
+      - SEARCH_URL=http://nginx:80
+    depends_on:
+      activemq:
+        condition: service_healthy
+    networks:
+      - search_net
+
+# =============================================================================
+# VOLUMES - Almacenamiento compartido entre contenedores
+# =============================================================================
+volumes:
+  datalake_data:
+    driver: local
+  datamarts_data:
+    driver: local
+
+# =============================================================================
+# NETWORKS
+# =============================================================================
+networks:
+  search_net:
+    driver: bridge
