@@ -1,18 +1,12 @@
 # =============================================================================
 # Stage 3 - Cluster Architecture
-# Simula un clúster distribuido en un solo PC usando contenedores Docker.
-#
-# Para arrancar todo:   docker compose up -d --build
-# Para ver logs:        docker compose logs -f
-# Para parar todo:      docker compose down
+# docker compose up -d --build
 # =============================================================================
 
 services:
 
   # ---------------------------------------------------------------------------
   # MESSAGE BROKER - Apache ActiveMQ
-  # Puerto 61616: JMS/TCP (comunicación entre servicios)
-  # Puerto 8161:  Consola web (http://localhost:8161, admin/admin)
   # ---------------------------------------------------------------------------
   activemq:
     image: rmohr/activemq:5.15.9
@@ -33,8 +27,7 @@ services:
       retries: 10
 
   # ---------------------------------------------------------------------------
-  # CRAWLER SERVICES - Descargan libros y publican eventos al broker
-  # Cada instancia procesa un subconjunto de IDs de libros
+  # CRAWLER SERVICES - Descargan libros, los replican entre sí y publican eventos
   # ---------------------------------------------------------------------------
   crawler1:
     build:
@@ -46,7 +39,11 @@ services:
       - NODE_ID=crawler1
       - BROKER_URL=tcp://activemq:61616
       - DATALAKE_PATH=/datalake
-      - BOOK_IDS=1342,11,1513        # Pride and Prejudice, Alice, Romeo
+      - BOOK_IDS=1342,11,1513
+      - PEER_URLS=http://crawler2:8090        # replicar a crawler2
+      - SERVER_PORT=8090
+    expose:
+      - "8090"
     volumes:
       - datalake_data:/datalake
     depends_on:
@@ -65,7 +62,11 @@ services:
       - NODE_ID=crawler2
       - BROKER_URL=tcp://activemq:61616
       - DATALAKE_PATH=/datalake
-      - BOOK_IDS=2701,84             # Moby Dick, Frankenstein
+      - BOOK_IDS=2701,84
+      - PEER_URLS=http://crawler1:8090        # replicar a crawler1
+      - SERVER_PORT=8090
+    expose:
+      - "8090"
     volumes:
       - datalake_data:/datalake
     depends_on:
@@ -120,8 +121,7 @@ services:
       - search_net
 
   # ---------------------------------------------------------------------------
-  # SEARCH SERVICES - Consultan Hazelcast y responden queries
-  # Exponen puerto 8080 internamente; Nginx balancea entre ellos
+  # SEARCH SERVICES - Consultan Hazelcast y responden queries REST
   # ---------------------------------------------------------------------------
   search1:
     build:
@@ -190,8 +190,7 @@ services:
       retries: 5
 
   # ---------------------------------------------------------------------------
-  # LOAD BALANCER - Nginx distribuye tráfico entre los search services
-  # Accesible en http://localhost:80
+  # LOAD BALANCER - Nginx
   # ---------------------------------------------------------------------------
   nginx:
     image: nginx:alpine
@@ -209,8 +208,7 @@ services:
       - search_net
 
   # ---------------------------------------------------------------------------
-  # CONTROL MODULE - Orquesta el pipeline y expone API de administración
-  # Accesible en http://localhost:7000
+  # CONTROL MODULE
   # ---------------------------------------------------------------------------
   control:
     build:
@@ -229,18 +227,12 @@ services:
     networks:
       - search_net
 
-# =============================================================================
-# VOLUMES - Almacenamiento compartido entre contenedores
-# =============================================================================
 volumes:
   datalake_data:
     driver: local
   datamarts_data:
     driver: local
 
-# =============================================================================
-# NETWORKS
-# =============================================================================
 networks:
   search_net:
     driver: bridge

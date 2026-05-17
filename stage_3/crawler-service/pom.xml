@@ -19,11 +19,17 @@
             <artifactId>javax.jms-api</artifactId>
             <version>2.0.1</version>
         </dependency>
+        <!-- Javalin - servidor REST para servir/recibir réplicas -->
+        <dependency>
+            <groupId>io.javalin</groupId>
+            <artifactId>javalin</artifactId>
+            <version>6.1.3</version>
+        </dependency>
         <!-- ActiveMQ JMS client (publicar eventos al broker) -->
         <dependency>
             <groupId>org.apache.activemq</groupId>
             <artifactId>activemq-client</artifactId>
-            <version>5.19.5</version>
+            <version>5.18.3</version>
         </dependency>
         <!-- JSON -->
         <dependency>
